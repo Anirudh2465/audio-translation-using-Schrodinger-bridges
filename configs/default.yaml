@@ -1,0 +1,71 @@
+# ============================================================
+# default.yaml  --  EOT / Schrodinger Bridge Morphing Config
+# ============================================================
+
+project:
+  name: "eot-crosslingual-morphing"
+  version: "0.1.0"
+  seed: 42
+
+# ---- Dataset ----
+data:
+  zh_tar:  "../../Dataset/Chinese/Chinese"
+  bn_tar:  "../../Dataset/bengali/bengali"
+  cache_dir: "../outputs/tar_index_cache"
+  sample_rate: 16000
+  max_duration_sec: 12.0
+  min_duration_sec: 0.5
+  min_up_votes: 2
+  max_down_votes: 0
+
+# ---- Feature extraction ----
+features:
+  type: "mel"           # "mel" | "wavlm" | "xvector"
+  n_mels: 80
+  n_fft: 1024
+  hop_length: 256
+  win_length: 1024
+  f_min: 80.0
+  f_max: 7600.0
+  norm: "slaney"
+
+# ---- Encoder ----
+encoder:
+  type: "mel"           # "mel" | "wavlm" | "xvector"
+  embedding_dim: 256    # Mel CNN embedding size
+
+# ---- Optimal Transport ----
+ot:
+  reg: 0.05             # entropic regularisation epsilon
+  reg_m: 1.0            # unbalanced OT KL marginal weight (null = balanced)
+  n_iter: 100           # Sinkhorn iterations
+  batch_size_ot: 512    # mini-batch OT size
+
+# ---- Schrodinger Bridge ----
+schrodinger_bridge:
+  n_timesteps: 50       # diffusion bridge time steps
+  sigma_min: 0.01
+  sigma_max: 1.0
+  hidden_dim: 512
+  n_heads: 8
+  n_layers: 6
+  dropout: 0.1
+
+# ---- Training ----
+training:
+  epochs: 100
+  batch_size: 32
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-6
+  grad_clip: 1.0
+  warmup_steps: 1000
+  save_every: 5         # save checkpoint every N epochs
+  log_every: 50         # log every N steps
+  val_every: 1          # validate every N epochs
+
+# ---- Paths ----
+paths:
+  output_dir: "../outputs"
+  checkpoint_dir: "../outputs/checkpoints"
+  feature_dir: "../outputs/features"
+  log_dir: "../outputs/logs"

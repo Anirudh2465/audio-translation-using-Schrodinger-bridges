@@ -1,0 +1,43 @@
+﻿# Virtual environment
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
+
+# Outputs (large files)
+outputs/checkpoints/
+outputs/features/
+outputs/exploration/
+outputs/logs/
+*.pt
+*.pth
+*.pkl
+*.npy
+
+# Notebooks checkpoints
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment files
+.env
+
+# Dataset (never commit raw data)
+Dataset/
