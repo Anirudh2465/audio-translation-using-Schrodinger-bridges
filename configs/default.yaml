@@ -9,8 +9,8 @@ project:
 
 # ---- Dataset ----
 data:
-  zh_tar:  "../../Dataset/Chinese/Chinese"
-  bn_tar:  "../../Dataset/bengali/bengali"
+  zh_tar:  "../Dataset/Chinese/Chinese"
+  bn_tar:  "../Dataset/bengali/bengali"
   cache_dir: "../outputs/tar_index_cache"
   sample_rate: 16000
   max_duration_sec: 12.0

@@ -1,4 +1,4 @@
-﻿"""
+"""
 data/explore.py
 ===============
 Streams TSV metadata from the TAR archives and generates statistics + plots.
@@ -33,7 +33,8 @@ def load_tsv(tar_path: str, locale: str, split: str) -> pd.DataFrame:
         for m in tar:
             if m.name == tsv:
                 f = tar.extractfile(m)
-                return pd.read_csv(f, sep="\t", dtype=str).fillna("")
+                import io
+                return pd.read_csv(io.BytesIO(f.read()), sep="\t", dtype=str).fillna("")
     warnings.warn(f"{split}.tsv not found for {locale}")
     return pd.DataFrame()
 

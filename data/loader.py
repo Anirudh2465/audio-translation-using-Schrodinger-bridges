@@ -1,4 +1,4 @@
-﻿"""
+"""
 data/loader.py
 ==============
 Streaming data loader for Mozilla Common Voice v26.0.
@@ -48,7 +48,7 @@ def load_tsv_from_tar(tar_path: str, locale: str, split: str) -> pd.DataFrame:
         for m in tar:
             if m.name == tsv:
                 f = tar.extractfile(m)
-                df = pd.read_csv(f, sep="\t", dtype=str).fillna("")
+                df = pd.read_csv(io.BytesIO(f.read()), sep="\t", dtype=str).fillna("")
                 df["archive_path"] = prefix + df["path"]
                 df["locale"] = locale
                 return df
@@ -117,17 +117,47 @@ class CommonVoiceDataset(Dataset):
                                           self.df["archive_path"].tolist(), cache_dir)
 
     def _load(self, path: str) -> Tuple[torch.Tensor, int]:
+        import soundfile as sf
+        import os, sys
+        from contextlib import contextmanager
+
+        @contextmanager
+        def suppress_c_stderr():
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            old_stderr = os.dup(2)
+            sys.stderr.flush()
+            os.dup2(devnull, 2)
+            try:
+                yield
+            finally:
+                os.dup2(old_stderr, 2)
+                os.close(old_stderr)
+                os.close(devnull)
+
         if self.use_index and self._index:
             with open(self.tar_path, "rb") as f:
                 f.seek(self._index[path])
                 buf = io.BytesIO(f.read(12 * 1024 * 1024))
-            return torchaudio.load(buf, format="mp3")
-        with tarfile.open(self.tar_path, "r|*") as tar:
-            for m in tar:
-                if m.name == path:
-                    buf = io.BytesIO(tar.extractfile(m).read())
-                    return torchaudio.load(buf, format="mp3")
-        raise FileNotFoundError(path)
+            with suppress_c_stderr():
+                data, sr = sf.read(buf)
+        else:
+            with tarfile.open(self.tar_path, "r|*") as tar:
+                for m in tar:
+                    if m.name == path:
+                        buf = io.BytesIO(tar.extractfile(m).read())
+                        with suppress_c_stderr():
+                            data, sr = sf.read(buf)
+                        break
+                else:
+                    raise FileNotFoundError(path)
+        
+        # soundfile returns (T, C) or (T,). Convert to (C, T) tensor.
+        wf = torch.from_numpy(data).float()
+        if wf.dim() == 1:
+            wf = wf.unsqueeze(0)
+        else:
+            wf = wf.transpose(0, 1)
+        return wf, sr
 
     def __len__(self): return len(self.df)
 
@@ -135,9 +165,9 @@ class CommonVoiceDataset(Dataset):
         row = self.df.iloc[idx]
         try:
             wf, sr = self._load(row["archive_path"])
-        except Exception as e:
-            warnings.warn(f"Load failed {row['archive_path']}: {e}")
-            wf, sr = torch.zeros(1, self.sample_rate), self.sample_rate
+        except Exception:
+            import random
+            return self.__getitem__(random.randint(0, len(self) - 1))
 
         if sr != self.sample_rate:
             wf = torchaudio.transforms.Resample(sr, self.sample_rate)(wf)
