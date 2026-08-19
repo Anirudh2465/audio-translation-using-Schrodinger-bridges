@@ -63,7 +63,12 @@ def train(cfg: dict):
     ).quality_filter(min_up=data_cfg["min_up_votes"],
                      max_down=data_cfg["max_down_votes"])
 
+    # Subset for testing end-to-end training
+    zh_ds.df = zh_ds.df.head(32)
+    bn_ds.df = bn_ds.df.head(32)
+
     tr_cfg  = cfg["training"]
+    tr_cfg["epochs"] = 1
     zh_loader = make_loader(zh_ds, tr_cfg["batch_size"])
     bn_loader = make_loader(bn_ds, tr_cfg["batch_size"])
     pairs     = CrossLingualIterator(zh_loader, bn_loader)

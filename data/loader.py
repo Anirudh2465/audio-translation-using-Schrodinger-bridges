@@ -60,7 +60,7 @@ def build_tar_index(tar_path: str, locale: str,
     """Build byte-offset index for O(1) random access. Cached to disk."""
     if cache_dir:
         os.makedirs(cache_dir, exist_ok=True)
-        cache = Path(cache_dir) / f"idx_{locale}.pkl"
+        cache = Path(cache_dir) / f"idx_v2_{locale}.pkl"
         if cache.exists():
             import pickle
             with open(cache, "rb") as f:
@@ -69,9 +69,9 @@ def build_tar_index(tar_path: str, locale: str,
     targets = set(paths)
     index: Dict[str, int] = {}
     with tarfile.open(tar_path, "r") as tar:
-        for m in tqdm(tar.getmembers(), desc=f"Indexing {locale} TAR"):
+        for m in tqdm(tar, desc=f"Indexing {locale} TAR"):
             if m.name in targets:
-                index[m.name] = m.offset_data
+                index[m.name] = (m.offset_data, m.size)
                 if len(index) == len(targets):
                     break
 
@@ -80,6 +80,80 @@ def build_tar_index(tar_path: str, locale: str,
         with open(cache, "wb") as f:
             pickle.dump(index, f)
     return index
+
+
+# ---------------------------------------------------------------------------
+# Audio Preprocessing Pipeline
+# ---------------------------------------------------------------------------
+
+def _denoise(wf_np: "np.ndarray", sr: int) -> "np.ndarray":
+    """Spectral-gating noise reduction (stationary noise removal)."""
+    import noisereduce as nr
+    return nr.reduce_noise(y=wf_np, sr=sr, stationary=True, prop_decrease=0.75)
+
+
+def _trim_silence(wf: torch.Tensor, sr: int,
+                  threshold_db: float = -40.0) -> torch.Tensor:
+    """Trim leading/trailing silence using energy thresholding."""
+    wf_np = wf.squeeze().numpy()
+    import numpy as np
+    # Frame-level energy in dB
+    frame_len = int(sr * 0.02)  # 20 ms
+    hop = frame_len // 2
+    energies = []
+    for i in range(0, len(wf_np) - frame_len, hop):
+        frame = wf_np[i:i + frame_len]
+        rms = np.sqrt(np.mean(frame ** 2)) + 1e-10
+        energies.append(20 * np.log10(rms))
+
+    if not energies:
+        return wf
+
+    energies = np.array(energies)
+    # Find first and last frame above threshold
+    above = np.where(energies > threshold_db)[0]
+    if len(above) == 0:
+        return wf  # all silence — return as-is
+
+    start_sample = above[0] * hop
+    end_sample = min(above[-1] * hop + frame_len, len(wf_np))
+    trimmed = wf_np[start_sample:end_sample]
+    return torch.from_numpy(trimmed).float().unsqueeze(0)
+
+
+def _peak_normalize(wf: torch.Tensor) -> torch.Tensor:
+    """Scale waveform so max |amplitude| = 1.0."""
+    peak = wf.abs().max()
+    if peak > 0:
+        wf = wf / peak
+    return wf
+
+
+def preprocess(wf: torch.Tensor, sr: int) -> torch.Tensor:
+    """
+    Full preprocessing pipeline:
+      1. Spectral-gating denoising
+      2. Silence trimming
+      3. Peak normalization
+    """
+    import numpy as np
+    wf_np = wf.squeeze().numpy()
+
+    # Skip zero / empty tensors
+    if wf_np.size == 0 or np.all(wf_np == 0):
+        return wf
+
+    # 1. Denoise
+    wf_np = _denoise(wf_np, sr)
+    wf = torch.from_numpy(wf_np).float().unsqueeze(0)
+
+    # 2. Trim silence
+    wf = _trim_silence(wf, sr)
+
+    # 3. Peak normalize
+    wf = _peak_normalize(wf)
+
+    return wf
 
 
 class CommonVoiceDataset(Dataset):
@@ -97,7 +171,7 @@ class CommonVoiceDataset(Dataset):
     """
     def __init__(self, tar_path: str, locale: str, split: str = "train",
                  sample_rate: int = 16_000, cache_dir: Optional[str] = None,
-                 use_index: bool = True, transform=None):
+                 use_index: bool = True, transform=None, max_samples: Optional[int] = None):
         self.tar_path    = str(tar_path)
         self.locale      = locale
         self.sample_rate = sample_rate
@@ -108,6 +182,11 @@ class CommonVoiceDataset(Dataset):
         self.df = load_tsv_from_tar(self.tar_path, locale, split)
         self.df["up_votes"]   = pd.to_numeric(self.df["up_votes"],   errors="coerce").fillna(0).astype(int)
         self.df["down_votes"] = pd.to_numeric(self.df["down_votes"], errors="coerce").fillna(0).astype(int)
+        
+        if max_samples is not None and max_samples < len(self.df):
+            # Sample randomly to get a good mix
+            self.df = self.df.sample(n=max_samples, random_state=42)
+            
         self.df = self.df.reset_index(drop=True)
         print(f"  -> {len(self.df):,} clips")
 
@@ -136,8 +215,9 @@ class CommonVoiceDataset(Dataset):
 
         if self.use_index and self._index:
             with open(self.tar_path, "rb") as f:
-                f.seek(self._index[path])
-                buf = io.BytesIO(f.read(12 * 1024 * 1024))
+                offset, size = self._index[path]
+                f.seek(offset)
+                buf = io.BytesIO(f.read(size))
             with suppress_c_stderr():
                 data, sr = sf.read(buf)
         else:
@@ -161,18 +241,25 @@ class CommonVoiceDataset(Dataset):
 
     def __len__(self): return len(self.df)
 
-    def __getitem__(self, idx) -> Tuple[torch.Tensor, int, ClipMeta]:
+    def __getitem__(self, idx, retries=0) -> Tuple[torch.Tensor, int, ClipMeta]:
         row = self.df.iloc[idx]
         try:
             wf, sr = self._load(row["archive_path"])
-        except Exception:
+        except Exception as e:
+            if retries > 5:
+                print(f"Max retries exceeded! Last error on {row['archive_path']}: {e}")
+                raise e
             import random
-            return self.__getitem__(random.randint(0, len(self) - 1))
+            return self.__getitem__(random.randint(0, len(self) - 1), retries=retries + 1)
 
         if sr != self.sample_rate:
             wf = torchaudio.transforms.Resample(sr, self.sample_rate)(wf)
         if wf.shape[0] > 1:
             wf = wf.mean(0, keepdim=True)
+
+        # Apply preprocessing pipeline
+        wf = preprocess(wf, self.sample_rate)
+
         if self.transform:
             wf = self.transform(wf)
 
@@ -208,7 +295,7 @@ def collate_fn(batch):
 
 
 def make_loader(dataset: CommonVoiceDataset, batch_size=16,
-                shuffle=True, num_workers=4) -> DataLoader:
+                shuffle=True, num_workers=0) -> DataLoader:
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle,
                       num_workers=num_workers, pin_memory=True,
                       collate_fn=collate_fn)

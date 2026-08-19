@@ -1,4 +1,4 @@
-﻿# Virtual environment
+# Virtual environment
 .venv/
 venv/
 env/
@@ -41,3 +41,9 @@ Thumbs.db
 
 # Dataset (never commit raw data)
 Dataset/
+
+# Auto-generated reports and images
+plots/*.png
+outputs/*.csv
+*.md
+!README.md
