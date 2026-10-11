@@ -56,8 +56,8 @@ def load_tsv_from_tar(tar_path: str, locale: str, split: str) -> pd.DataFrame:
 
 
 def build_tar_index(tar_path: str, locale: str,
-                    paths: List[str], cache_dir: Optional[str] = None) -> Dict[str, int]:
-    """Build byte-offset index for O(1) random access. Cached to disk."""
+                    paths: List[str], cache_dir: Optional[str] = None) -> Dict[str, Tuple[int, int]]:
+    """Build byte-offset and size index for O(1) random access. Cached to disk."""
     if cache_dir:
         os.makedirs(cache_dir, exist_ok=True)
         cache = Path(cache_dir) / f"idx_{locale}.pkl"
@@ -67,13 +67,18 @@ def build_tar_index(tar_path: str, locale: str,
                 return pickle.load(f)
 
     targets = set(paths)
-    index: Dict[str, int] = {}
-    with tarfile.open(tar_path, "r") as tar:
-        for m in tqdm(tar.getmembers(), desc=f"Indexing {locale} TAR"):
-            if m.name in targets:
-                index[m.name] = m.offset_data
-                if len(index) == len(targets):
+    index: Dict[str, Tuple[int, int]] = {}
+    with tarfile.open(tar_path, "r:*") as tar:
+        with tqdm(total=len(targets), desc=f"Indexing {locale} TAR") as pbar:
+            while True:
+                m = tar.next()
+                if m is None:
                     break
+                if m.name in targets:
+                    index[m.name] = (m.offset_data, m.size)
+                    pbar.update(1)
+                    if len(index) == len(targets):
+                        break
 
     if cache_dir:
         import pickle
@@ -134,10 +139,15 @@ class CommonVoiceDataset(Dataset):
                 os.close(old_stderr)
                 os.close(devnull)
 
-        if self.use_index and self._index:
+        if self.use_index and self._index and path in self._index:
+            entry = self._index[path]
+            if isinstance(entry, (tuple, list)):
+                offset, size = entry
+            else:
+                offset, size = entry, 12 * 1024 * 1024
             with open(self.tar_path, "rb") as f:
-                f.seek(self._index[path])
-                buf = io.BytesIO(f.read(12 * 1024 * 1024))
+                f.seek(offset)
+                buf = io.BytesIO(f.read(size))
             with suppress_c_stderr():
                 data, sr = sf.read(buf)
         else:
@@ -162,12 +172,16 @@ class CommonVoiceDataset(Dataset):
     def __len__(self): return len(self.df)
 
     def __getitem__(self, idx) -> Tuple[torch.Tensor, int, ClipMeta]:
-        row = self.df.iloc[idx]
-        try:
-            wf, sr = self._load(row["archive_path"])
-        except Exception:
-            import random
-            return self.__getitem__(random.randint(0, len(self) - 1))
+        for _ in range(10):
+            row = self.df.iloc[idx]
+            try:
+                wf, sr = self._load(row["archive_path"])
+                break
+            except Exception:
+                import random
+                idx = random.randint(0, len(self) - 1)
+        else:
+            raise RuntimeError(f"Failed to load audio after 10 attempts starting at index {idx}")
 
         if sr != self.sample_rate:
             wf = torchaudio.transforms.Resample(sr, self.sample_rate)(wf)
@@ -208,7 +222,7 @@ def collate_fn(batch):
 
 
 def make_loader(dataset: CommonVoiceDataset, batch_size=16,
-                shuffle=True, num_workers=4) -> DataLoader:
+                shuffle=True, num_workers=0) -> DataLoader:
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle,
                       num_workers=num_workers, pin_memory=True,
                       collate_fn=collate_fn)

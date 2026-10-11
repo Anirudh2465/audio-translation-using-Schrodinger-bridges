@@ -1,4 +1,4 @@
-﻿# Virtual environment
+# Virtual environment
 .venv/
 venv/
 env/
@@ -24,6 +24,8 @@ outputs/logs/
 *.pth
 *.pkl
 *.npy
+*.wav
+*.mp3
 
 # Notebooks checkpoints
 .ipynb_checkpoints/

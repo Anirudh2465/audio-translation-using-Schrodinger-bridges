@@ -97,10 +97,11 @@ def sinkhorn_unbalanced(C: torch.Tensor, reg: float = 0.05,
     tau  = reg_m / (reg_m + reg)
 
     for _ in range(n_iter):
-        u = (a / (K @ v)).pow(tau)
-        v = (b / (K.T @ u)).pow(tau)
+        u = (a / ((K @ v).clamp(min=1e-12))).pow(tau)
+        v = (b / ((K.T @ u).clamp(min=1e-12))).pow(tau)
 
-    return u[:, None] * K * v[None, :]
+    P = u[:, None] * K * v[None, :]
+    return torch.nan_to_num(P, nan=1.0 / (n * m))
 
 
 def wasserstein_distance(C: torch.Tensor, P: torch.Tensor) -> torch.Tensor:
@@ -116,8 +117,8 @@ def minibatch_eot_loss(x: torch.Tensor, y: torch.Tensor,
     Used as the training objective for the Schrodinger Bridge drift network.
 
     Args:
-        x:     (B, D) source embeddings (e.g., zh-CN WavLM features)
-        y:     (B, D) target embeddings (e.g., Bengali WavLM features)
+        x:     (B, D) source embeddings (e.g., zh-CN features)
+        y:     (B, D) target embeddings (e.g., Bengali features)
         reg:   Entropic regularisation epsilon
         reg_m: If set, use unbalanced OT with this marginal weight
         n_iter: Sinkhorn iterations
@@ -125,8 +126,34 @@ def minibatch_eot_loss(x: torch.Tensor, y: torch.Tensor,
         Tuple of (Scalar EOT loss, Transport Plan P of shape (B, B))
     """
     C = cost_matrix(x, y)
+    scale = C.max().clamp(min=1e-8)
+    C_scaled = C / scale
+
     if reg_m is not None:
-        P = sinkhorn_unbalanced(C, reg=reg, reg_m=reg_m, n_iter=n_iter)
+        P = sinkhorn_unbalanced(C_scaled, reg=reg, reg_m=reg_m, n_iter=n_iter)
     else:
-        P = sinkhorn(C, reg=reg, n_iter=n_iter)
-    return wasserstein_distance(C, P), P
+        P = sinkhorn(C_scaled, reg=reg, n_iter=n_iter)
+    return wasserstein_distance(C_scaled, P), P
+
+
+def sample_transport_pairs(P: torch.Tensor, deterministic: bool = False) -> torch.Tensor:
+    """
+    Sample target assignment indices j(i) for each source item i from the
+    Entropic Optimal Transport plan P (shape B, B).
+    Follows Diffusion Schrodinger Bridge Matching (Shi et al., ICML 2024),
+    ensuring each source utterance is coupled with an actual, coherent target
+    utterance rather than a blurred convex combination.
+
+    Args:
+        P: (B, B) transport plan matrix from Sinkhorn algorithm
+        deterministic: If True, uses argmax (MAP / Monge assignment).
+                       If False, samples from conditional categorical distribution.
+    Returns:
+        target_indices: (B,) indices of matched target samples
+    """
+    p_cond = P / P.sum(dim=1, keepdim=True).clamp(min=1e-12)
+    if deterministic:
+        return torch.argmax(p_cond, dim=1)
+    else:
+        return torch.multinomial(p_cond, num_samples=1).squeeze(-1)
+

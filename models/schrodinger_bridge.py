@@ -114,10 +114,14 @@ class SchrodingerBridgeSDE:
         return self.sigma_min + t * (self.sigma_max - self.sigma_min)
 
     def sde_step(self, x_t: torch.Tensor, t: torch.Tensor,
-                 dt: float) -> torch.Tensor:
-        """One Euler-Maruyama step of the SDE."""
+                 dt: float, sigma_scale: float = 0.0) -> torch.Tensor:
+        """One Euler-Maruyama or ODE step."""
         drift = self.net(x_t, t)
-        sigma = self.sigma(t)
+        if sigma_scale <= 0.0:
+            # Deterministic Probability Flow ODE (no white noise accumulation)
+            return x_t + drift * dt
+
+        sigma = self.sigma(t) * sigma_scale
         if x_t.dim() == 3:
             sigma = sigma.view(-1, 1, 1)
         else:
@@ -127,26 +131,32 @@ class SchrodingerBridgeSDE:
 
     @torch.no_grad()
     def morph(self, x_source: torch.Tensor,
-              return_trajectory: bool = False):
+              return_trajectory: bool = False,
+              target_t: float = 1.0,
+              sigma_scale: float = 0.0):
         """
         Generate a morphing trajectory from source to target distribution.
 
         Args:
-            x_source: (B, D) source embeddings (zh-CN)
-            return_trajectory: If True, return all T+1 intermediate states
+            x_source: (B, D) or (B, T, D) source embeddings (zh-CN)
+            return_trajectory: If True, return all intermediate states
+            target_t: Target time in [0.0, 1.0] (e.g., 0.5 for intermediate, 1.0 for full target)
+            sigma_scale: Noise scale (0.0 = deterministic ODE flow, >0 = stochastic SDE)
 
         Returns:
-            x_1:       (B, D) final morphed embedding (approximates target)
-            trajectory: List[(B, D)] of length n_steps+1 (if return_trajectory)
+            x_t: final morphed embedding at target_t
+            trajectory: List of states along trajectory (if return_trajectory=True)
         """
-        x     = x_source.clone()
-        traj  = [x.clone()] if return_trajectory else None
-        dt    = 1.0 / self.n_steps
+        x = x_source.clone()
+        traj = [x.clone()] if return_trajectory else None
+        
+        n_steps = max(int(self.n_steps * target_t), 1)
+        dt = target_t / n_steps
 
-        for step in range(self.n_steps):
+        for step in range(n_steps):
             t_val = torch.full((x.shape[0],), step * dt,
                                device=x.device, dtype=x.dtype)
-            x = self.sde_step(x, t_val, dt)
+            x = self.sde_step(x, t_val, dt, sigma_scale=sigma_scale)
             if return_trajectory:
                 traj.append(x.clone())
 

@@ -9,8 +9,8 @@ project:
 
 # ---- Dataset ----
 data:
-  zh_tar:  "../Dataset/Chinese/Chinese"
-  bn_tar:  "../Dataset/bengali/bengali"
+  zh_tar:  "../Dataset/Chinese(China)/zh-CN.tar"
+  bn_tar:  "../Dataset/Bengali/bn.tar"
   cache_dir: "../outputs/tar_index_cache"
   sample_rate: 16000
   max_duration_sec: 12.0
@@ -20,19 +20,20 @@ data:
 
 # ---- Feature extraction ----
 features:
-  type: "mel"           # "mel" | "wavlm" | "xvector"
+  type: "wavlm"         # "mel" | "wavlm" | "xvector"
   n_mels: 80
   n_fft: 1024
   hop_length: 256
   win_length: 1024
-  f_min: 80.0
-  f_max: 7600.0
-  norm: "slaney"
+  f_min: 0.0
+  f_max: 8000.0
 
 # ---- Encoder ----
 encoder:
-  type: "mel"           # "mel" | "wavlm" | "xvector"
-  embedding_dim: 256    # Mel CNN embedding size
+  type: "wavlm"         # "mel" | "wavlm" | "xvector"
+  embedding_dim: 768    # 768-dimensional WavLM latent manifold
+  pretrained: "microsoft/wavlm-base-plus"
+  freeze: true
 
 # ---- Optimal Transport ----
 ot:
@@ -43,6 +44,7 @@ ot:
 
 # ---- Schrodinger Bridge ----
 schrodinger_bridge:
+  embedding_dim: 768    # 768-dimensional WavLM latent manifold
   n_timesteps: 50       # diffusion bridge time steps
   sigma_min: 0.01
   sigma_max: 1.0
@@ -53,14 +55,14 @@ schrodinger_bridge:
 
 # ---- Training ----
 training:
-  epochs: 100
-  batch_size: 32
+  epochs: 15
+  batch_size: 8
   learning_rate: 1.0e-4
   weight_decay: 1.0e-6
   grad_clip: 1.0
   warmup_steps: 1000
-  save_every: 5         # save checkpoint every N epochs
-  log_every: 50         # log every N steps
+  save_every: 2         # save checkpoint every N epochs
+  log_every: 10         # log every N steps
   val_every: 1          # validate every N epochs
 
 # ---- Paths ----

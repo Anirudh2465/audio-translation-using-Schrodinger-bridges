@@ -71,20 +71,29 @@ class WavLMEncoder(nn.Module):
                 lengths: Optional[torch.Tensor] = None,
                 frame_level: bool = False) -> torch.Tensor:
         """
-        waveform: (B, 1, T) at 16 kHz
+        waveform: (B, 1, T) or (B, T) at 16 kHz on GPU/CPU
         Returns:
             frame_level=False -> (B, 768) utterance embedding
             frame_level=True  -> (B, T_frames, 768)
         """
-        wav_np = [waveform[i,0].cpu().numpy() for i in range(len(waveform))]
-        inputs = self.feat_ext(wav_np, sampling_rate=16000,
-                               return_tensors="pt", padding=True)
         device = next(self.model.parameters()).device
-        inputs = {k: v.to(device) for k, v in inputs.items()}
+        wf = waveform.to(device)
+        if wf.dim() == 3:
+            wf = wf.squeeze(1)
+
+        attention_mask = None
+        if lengths is not None:
+            lengths = lengths.to(device)
+            max_len = wf.shape[-1]
+            attention_mask = (torch.arange(max_len, device=device)[None, :] < lengths[:, None]).long()
 
         with torch.no_grad() if not self.training else torch.enable_grad():
-            outs = self.model(**inputs,
-                              output_hidden_states=(self.layer is not None))
+            if attention_mask is not None:
+                outs = self.model(input_values=wf, attention_mask=attention_mask,
+                                  output_hidden_states=(self.layer is not None))
+            else:
+                outs = self.model(input_values=wf,
+                                  output_hidden_states=(self.layer is not None))
 
         feats = outs.hidden_states[self.layer] if self.layer is not None \
                 else outs.last_hidden_state     # (B, T_frames, D)
@@ -94,12 +103,9 @@ class WavLMEncoder(nn.Module):
 
         # Mean pool with length mask
         if lengths is not None:
-            mask = torch.zeros(feats.shape[:2], device=device)
-            for i, l in enumerate(lengths):
-                # Convert sample lengths to frame lengths
-                frame_len = min(int(l.item() / 320), feats.shape[1])
-                mask[i, :frame_len] = 1.0
-            mask = mask.unsqueeze(-1)
+            frame_lens = (lengths // 320).clamp(max=feats.shape[1], min=1)
+            t_steps = torch.arange(feats.shape[1], device=device)[None, :]
+            mask = (t_steps < frame_lens[:, None]).unsqueeze(-1).float()
             return (feats * mask).sum(1) / mask.sum(1).clamp(min=1)
         return feats.mean(1)
 
